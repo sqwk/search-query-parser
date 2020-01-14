@@ -6,7 +6,7 @@
   "module": "dist/search-query-parser.js",
   "typings": "dist/search-query-parser.d.ts",
   "scripts": {
-    "test": "mocha -R spec",
+    "test": "mocha -r ts-node/register lib/**/*.test.ts",
     "clean": "rimraf dist",
     "build": "npm run build:prod",
     "build:dev": "npm run clean && webpack --mode development --progress --profile --colors --bail --display-error-details",
@@ -31,13 +31,14 @@
   },
   "homepage": "https://github.com/nepsilon/search-query-parser",
   "devDependencies": {
+    "@types/chai": "^4.2.7",
+    "@types/mocha": "^5.2.7",
     "awesome-typescript-loader": "5.2.1",
-    "mocha": "^6.1.4",
+    "chai": "^4.2.0",
+    "mocha": "^6.2.2",
     "rimraf": "3.0.0",
-    "should": "^3.2.0",
+    "ts-node": "^8.5.4",
     "tslint": "5.20.1",
-    "typedoc": "^0.15.4",
-    "typedoc-plugin-markdown": "^1.1.27",
     "typescript": "3.7.2",
     "webpack": "4.41.2",
     "webpack-cli": "3.3.10"

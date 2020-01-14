@@ -1,32 +1,52 @@
 /*!
  * search-query-parser.js
- * Copyright(c) 2014-2019
+ * Copyright(c) 2014-2020
  * MIT Licensed
  */
-export declare type SearchParserOptions = {
-    offsets?: boolean;
-    tokenize?: boolean;
-    keywords?: string[];
-    ranges?: string[];
-    alwaysArray?: boolean;
+declare type KeywordName = string;
+declare type RangeName = string;
+declare type Options<K extends KeywordName, R extends RangeName> = {
+    keywords: readonly K[];
+    ranges: readonly R[];
+    offsets: boolean;
+    alwaysArray: boolean;
+    tokenize: boolean;
 };
-export declare type SearchParserOffset = (SearchParserKeyWordOffset | SearchParserTextOffset) & {
-    offsetStart: number;
-    offsetEnd: number;
+declare type TextOffset = {
+    text: string;
 };
-export declare type SearchParserKeyWordOffset = {
+declare type KeywordOffset = {
     keyword: string;
     value: string;
 };
-export declare type SearchParserTextOffset = {
-    text: string;
+declare type RangeOffset = {
+    keyword: string;
+    from: string;
+    to?: string;
 };
-export declare type SearchParserDictionary = {
-    [key: string]: any;
+declare type Offset = (TextOffset | KeywordOffset | RangeOffset) & {
+    offsetStart: number;
+    offsetEnd: number;
+    exclude: boolean;
 };
-export declare type SearchParserResult = SearchParserDictionary & {
-    text: string | string[];
-    offsets?: SearchParserOffset[];
-    exclude?: SearchParserDictionary;
+declare type TextValue = string;
+declare type KeywordValue = string;
+declare type RangeValue = {
+    from: string;
+    to?: string;
 };
-export declare function parse(string: string, options: SearchParserOptions): SearchParserResult | string;
+declare type Result<K extends KeywordName, R extends RangeName> = {
+    options: Options<K, R>;
+    offsets?: Offset[];
+    exclude?: ResultData<K, R>;
+} & ResultData<K, R>;
+declare type ResultData<K extends KeywordName, R extends RangeName> = {
+    text?: TextValue | TextValue[];
+} & {
+    [L in K]?: KeywordValue | KeywordValue[];
+} & {
+    [S in R]?: RangeValue | RangeValue[];
+};
+export declare function parse<K extends KeywordName, R extends RangeName>(str?: string, userOptions?: Partial<Options<K, R>>): string | Result<K, R>;
+export declare function stringify<K extends KeywordName, R extends RangeName>(parseResult: Result<K, R> | string): string;
+export {};

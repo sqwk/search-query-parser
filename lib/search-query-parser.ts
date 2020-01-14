@@ -1,352 +1,528 @@
 /*!
  * search-query-parser.js
- * Copyright(c) 2014-2019
+ * Copyright(c) 2014-2020
  * MIT Licensed
  */
 
-export type SearchParserOptions = {
-    offsets?: boolean;
-    tokenize?: boolean;
-    keywords?: string[];
-    ranges?: string[];
-    alwaysArray?: boolean;
-}
+type KeywordName = string;
 
-export type SearchParserOffset = (SearchParserKeyWordOffset | SearchParserTextOffset) & {
+type RangeName = string;
+
+type Options<K extends KeywordName, R extends RangeName > = {
+    keywords: readonly K[];
+    ranges: readonly R[];
+    offsets: boolean;
+    alwaysArray: boolean;
+    tokenize: boolean;
+};
+
+type TextOffset = {
+    text: string;
+};
+
+type KeywordOffset = {
+    keyword: string;
+    value: string;
+};
+
+type RangeOffset = {
+    keyword: string;
+    from: string;
+    to?: string;
+};
+
+type Offset = (TextOffset | KeywordOffset | RangeOffset) & {
     offsetStart: number;
     offsetEnd: number;
-}
-  
-export type SearchParserKeyWordOffset = {
-    keyword: string;
-    value: string;  
-}
-  
-export type SearchParserTextOffset = {
-    text: string;
+    exclude: boolean;
+};
+
+type TextValue = string;
+
+type KeywordValue = string;
+
+type RangeValue = {
+    from: string;
+    to?: string;
+};
+
+type Result<K extends KeywordName, R extends RangeName> = {
+    options: Options<K, R>,
+    offsets?: Offset[];
+    exclude?: ResultData<K, R>;
+} & ResultData<K, R>;
+
+type ResultData<K extends KeywordName, R extends RangeName> = {
+    text?: TextValue | TextValue[];
+} & {
+    [L in K]?: KeywordValue | KeywordValue[];
+} & {
+    [S in R]?: RangeValue | RangeValue[];
+};
+
+/**
+ * Strips surrounding quotes
+ */
+function stripSurroundingQuotes(val: string): string {
+    return val.replace(/^\"|\"$|^\'|\'$/g, '');
 }
 
-export type SearchParserDictionary = {
-    [key: string]: any;
-}  
-
-export type SearchParserResult = SearchParserDictionary & {
-    text: string | string[];
-    offsets?: SearchParserOffset[];
-    exclude?: SearchParserDictionary;
+// Adds quotes around multiple words
+function addQuotes(val: string) {
+    return val.indexOf(' ') > - 1 ? JSON.stringify(val) : val;
 }
 
-export function parse(string = '', options: SearchParserOptions): SearchParserResult | string {
+/**
+ * Strips backslashes respecting escapes
+ */
+function stripBackslashes(val: string): string {
+    return val.replace(/\\(.?)/g, (_s, n1) => {
+        switch (n1) {
+            case '\\':
+                return '\\';
+            case '0':
+                return '\u0000';
+            case '':
+                return '';
+            default:
+                return n1;
+        }
+    });
+}
+
+/**
+ * Parse a range, split it into parts seperated by a dash
+ */
+function parseRange(term: string): RangeValue|null {
+
+    let rangeValues = term.split('-');
+
+    // When two ends of the range are specified
+    if (rangeValues.length === 2) {
+        return {
+            from: rangeValues[0],
+            to: rangeValues[1]
+        };
+
+    // When pairs of ranges are specified
+    // keyword:XXXX-YYYY,AAAA-BBBB
+    } else if (rangeValues.length % 2 === 0) {
+        console.error(`Cannot parse multiple pairs of ranges as of now '${JSON.stringify(rangeValues)}'`);
+        return null;
+
+    // When only getting a single value,
+    // or an odd number of values
+    } else {
+        return {
+            from: rangeValues[0],
+            to: undefined
+        };
+    }
+}
+
+/**
+ * Parses a string to return a processed SearchParserResult
+ */
+export function parse<K extends KeywordName, R extends RangeName>(str = '', userOptions?: Partial<Options<K, R>>) {
 
     // Merge options with default options
-    options = {
+    const defaultOptions: Options<K, R> = {
+        keywords: [],
+        ranges: [],
         tokenize: false,
         alwaysArray: false,
-        offsets: true,
-        ...options
+        offsets: true
     };
+    const options = Object.assign(defaultOptions, userOptions);
 
     // When only a simple string is passed, return it
-    if (string.indexOf(':') === -1 && options.tokenize == null) {
-        return string;
+    if (options.tokenize == false && str.indexOf(':') === -1) {
+        return str;
 
     // When no keywords or ranges set, treat as a simple string
-    } else if (options.keywords == null && options.ranges == null && options.tokenize == false){
-        return string;
-    
+    } else if (options.tokenize == false
+           && (options.keywords == null || options.keywords.length === 0)
+           && (options.ranges == null || options.ranges.length === 0)) {
+                return str;
+
     // Otherwise parse the advanced query syntax
     } else {
 
         // Init object to store the query object
-        let parseResult: SearchParserResult = { text: [] };
+        let parseResult = {
+            options: options
+        } as Result<K, R>;
 
-        // When offsets is true, create their array
-        if (options.offsets) {
-            parseResult.offsets = [];
-        }
+        // Temporary storage of terms while processing the input string
+        let terms: Offset[] = [];
 
-        let exclusion: SearchParserDictionary = {};
-        let terms: SearchParserOffset[] = [];
+        const regex = /(\S+:'(?:[^'\\]|\\.)*')|(\S+:"(?:[^"\\]|\\.)*")|(-?"(?:[^"\\]|\\.)*")|(-?'(?:[^'\\]|\\.)*')|\S+|\S+:\S+/g;
 
-        // Get a list of search terms respecting single and double quotes
-        let regex = /(\S+:'(?:[^'\\]|\\.)*')|(\S+:"(?:[^"\\]|\\.)*")|(-?"(?:[^"\\]|\\.)*")|(-?'(?:[^'\\]|\\.)*')|\S+|\S+:\S+/g;
+        // Primary loop to split apart individual search terms and key/value pairs
         let match;
-        while ((match = regex.exec(string)) !== null) {
+        while ((match = regex.exec(str)) !== null) {
             let term = match[0];
             let sepIndex = term.indexOf(':');
+
+            // Term is a key:value pair of some kind
             if (sepIndex !== -1) {
-                let split = term.split(':'),
-                        key = term.slice(0, sepIndex),
-                        val = term.slice(sepIndex + 1);
-                // Strip surrounding quotes
-                val = val.replace(/^\"|\"$|^\'|\'$/g, '');
-                // Strip backslashes respecting escapes
-                val = (val + '').replace(/\\(.?)/g, function (s, n1) {
-                    switch (n1) {
-                    case '\\':
-                        return '\\';
-                    case '0':
-                        return '\u0000';
-                    case '':
-                        return '';
-                    default:
-                        return n1;
-                    }
-                });
-                terms.push({
-                    keyword: key,
-                    value: val,
-                    offsetStart: match.index,
-                    offsetEnd: match.index + term.length
-                });
-            } else {
-                let isExcludedTerm = false;
-                if (term[0] === '-') {
-                    isExcludedTerm = true;
-                    term = term.slice(1);
+
+                // Seperate key and value
+                let key = term.slice(0, sepIndex);
+                let val = term.slice(sepIndex + 1);
+
+                const isExcludedKey = key[0] === '-' ? true : false;
+
+                if (isExcludedKey === true) {
+                    key = key.slice(1);
                 }
 
-                // Strip surrounding quotes
-                term = term.replace(/^\"|\"$|^\'|\'$/g, '');
-                // Strip backslashes respecting escapes
-                term = (term + '').replace(/\\(.?)/g, function (s, n1) {
-                    switch (n1) {
-                    case '\\':
-                        return '\\';
-                    case '0':
-                        return '\u0000';
-                    case '':
-                        return '';
-                    default:
-                        return n1;
-                    }
-                });
+                val = stripSurroundingQuotes(val);
+                val = stripBackslashes(val);
 
-                if (isExcludedTerm) {
-                    if (exclusion['text']) {
-                        if (exclusion['text'] instanceof Array) {
-                            exclusion['text'].push(term);
-                        } else {
-                            exclusion['text'] = [exclusion['text']];
-                            exclusion['text'].push(term);
-                        }
-                    } else {
-                        // First time seeing an excluded text term
-                        exclusion['text'] = term;
-                    }
-                } else {
+                // Make sure that keywords and ranges are defined
+
+                // Divide into keyword, range or non-configured keyword/range (=text)
+                if (options.keywords.indexOf(key as K) !== -1) {
+                    terms.push({
+                        keyword: key,
+                        value: val,
+                        offsetStart: match.index,
+                        offsetEnd: match.index + term.length,
+                        exclude: isExcludedKey
+                    });
+                } else if (options.ranges.indexOf(key as R) !== -1) {
+                    terms.push({
+                        keyword: key,
+                        from: val,
+                        to: undefined,
+                        offsetStart: match.index,
+                        offsetEnd: match.index + term.length,
+                        exclude: isExcludedKey
+                    });
+                } else {
                     terms.push({
                         text: term,
                         offsetStart: match.index,
-                        offsetEnd: match.index + term.length
+                        offsetEnd: match.index + term.length,
+                        exclude: isExcludedKey
                     });
                 }
+
+            // Term is not a key:value pair, must be text
+            } else {
+
+                const isExcludedTerm = term[0] === '-' ? true : false;
+
+                if (isExcludedTerm === true) {
+                    term = term.slice(1);
+                }
+
+                term = stripSurroundingQuotes(term);
+                term = stripBackslashes(term);
+
+                terms.push({
+                    text: term,
+                    offsetStart: match.index,
+                    offsetEnd: match.index + term.length,
+                    exclude: isExcludedTerm
+                });
+
             }
+
         }
 
-        // Reverse to ensure proper order when pop()'ing.
-        terms.reverse();
-
-        // For each search term
-        let term: SearchParserOffset;
-        while (term = terms.pop()) {
+        // Secondary looop
+        // Do some more processing of the search terms
+        terms.forEach((term) => {
 
             // When just a simple term
             if ('text' in term) {
 
-                // We add it as pure text
-                (parseResult.text as string[]).push(term.text);
+                // Make sure text is a thing
+                if (term.text.length) {
 
-                // When offsets is true, push a new offset
-                if (options.offsets) {
-                    parseResult.offsets.push(term);
-                }
 
-            // We got an advanced search syntax
-            } else {
-                let key = term.keyword;
-                // Check if the key is a registered keyword
-                options.keywords = options.keywords || [];
-                let isKeyword = false;
-                let isExclusion = false;
-                if (!/^-/.test(key)) {
-                        isKeyword = !(-1 === options.keywords.indexOf(key));
-                } else    if (key[0] === '-') {
-                        let _key = key.slice(1);
-                        isKeyword = !(-1 === options.keywords.indexOf(_key))
-                        if (isKeyword) {
-                                key = _key;
-                                isExclusion = true;
+                    if (term.exclude === true) {
+
+                        if (parseResult.exclude == null) {
+                            parseResult.exclude = {};
                         }
-                }
 
-                // Check if the key is a registered range
-                options.ranges = options.ranges || [];
-                let isRange = !(-1 === options.ranges.indexOf(key));
-                // When the key matches a keyword
-                if (isKeyword) {
-                    // When offsets is true, push a new offset
-                    if (options.offsets) {
-                        parseResult.offsets.push({
-                            keyword: key,
-                            value: term.value,
-                            offsetStart: isExclusion ? term.offsetStart + 1 : term.offsetStart,
-                            offsetEnd: term.offsetEnd
-                        });
-                    }
-
-                    let value = term.value;
-                    // When value is a thing
-                    if (value.length) {
-                        // Get an array of values when several are there
-                        let values = value.split(',');
-                        if (isExclusion) {
-                            if (exclusion[key]) {
-                                // ...many times...
-                                if (exclusion[key] instanceof Array) {
-                                    // ...and got several values this time...
-                                    if (values.length > 1) {
-                                        // ... concatenate both arrays.
-                                        exclusion[key] = exclusion[key].concat(values);
-                                    }
-                                    else {
-                                        // ... append the current single value.
-                                        exclusion[key].push(value);
-                                    }
-                                }
-                                // We saw that keyword only once before
-                                else {
-                                    // Put both the current value and the new
-                                    // value in an array
-                                    exclusion[key] = [exclusion[key]];
-                                    exclusion[key].push(value);
-                                }
-                            }
-                            // First time we see that keyword
-                            else {
-                                // ...and got several values this time...
-                                if (values.length > 1) {
-                                    // ...add all values seen.
-                                    exclusion[key] = values;
-                                }
-                                // Got only a single value this time
-                                else {
-                                    // Record its value as a string
-                                    if (options.alwaysArray) {
-                                        // ...but we always return an array if option alwaysArray is true
-                                        exclusion[key] = [value];
-                                    } else {
-                                        // Record its value as a string
-                                        exclusion[key] = value;
-                                    }
-                                }
-                            }
+                        // Push text onto existing array or create new array
+                        if (parseResult.exclude.text != null) {
+                            (parseResult.exclude.text as TextValue[]).push(term.text);
                         } else {
-                            // If we already have seen that keyword...
-                            if (parseResult[key]) {
-                                // ...many times...
-                                if (parseResult[key] instanceof Array) {
-                                    // ...and got several values this time...
-                                    if (values.length > 1) {
-                                        // ... concatenate both arrays.
-                                        parseResult[key] = parseResult[key].concat(values);
-                                    }
-                                    else {
-                                        // ... append the current single value.
-                                        parseResult[key].push(value);
-                                    }
-                                }
-                                // We saw that keyword only once before
-                                else {
-                                    // Put both the current value and the new
-                                    // value in an array
-                                    parseResult[key] = [parseResult[key]];
-                                    parseResult[key].push(value);
-                                }
-                            }
-                            // First time we see that keyword
-                            else {
-                                // ...and got several values this time...
-                                if (values.length > 1) {
-                                    // ...add all values seen.
-                                    parseResult[key] = values;
-                                }
-                                // Got only a single value this time
-                                else {
-                                    if (options.alwaysArray) {
-                                        // ...but we always return an array if option alwaysArray is true
-                                        parseResult[key] = [value];
-                                    } else {
-                                        // Record its value as a string
-                                        parseResult[key] = value;
-                                    }
-                                }
-                            }
+                            parseResult.exclude.text = [term.text];
+                        }
+
+                    // Not an exclusion
+                    } else {
+
+                        // Push text onto existing array or create new array
+                        if (parseResult.text != null) {
+                            (parseResult.text as TextValue[]).push(term.text);
+                        } else {
+                            parseResult.text = [term.text];
                         }
                     }
-                
-                // The key allows a range
-                } else if (isRange) {
-                    
-                    // When offsets is true, push a new offset
-                    if (options.offsets) {
+
+                    // When offsets is true, we also add it to the offsets array
+                    if (options.offsets === true) {
+                        if (parseResult.offsets == null) {
+                            parseResult.offsets = [];
+                        }
+                        parseResult.offsets.push(term);
+                    }
+                }
+
+            // Keyword
+            } else if ('value' in term) {
+
+                // Make sure value is a thing
+                if (term.value.length) {
+
+                    // Get an array of values when several are there
+                    // or turn into array if it's only one value anyway
+                    let values = term.value.split(',');
+
+                    if (term.exclude === true) {
+
+                        if (parseResult.exclude == null) {
+                            parseResult.exclude = {};
+                        }
+
+                        // Push values onto existing array or create new array
+                        if (parseResult.exclude[term.keyword as K] != null) {
+                            (parseResult.exclude[term.keyword as K] as KeywordValue[]).push(...values);
+                        } else {
+                            (parseResult.exclude[term.keyword as K] as KeywordValue[]) = values;
+                        }
+
+                    // Not an exclusion
+                    } else {
+
+                        // Push values onto existing array or create new array
+                        if (parseResult[term.keyword as K] != null) {
+                            (parseResult[term.keyword as K] as KeywordValue[]).push(...values);
+                        } else {
+                            (parseResult[term.keyword as K] as KeywordValue[]) = values;
+                        }
+                    }
+
+                    // When offsets is true, we also add it to the offsets array
+                    if (options.offsets === true) {
+                        if (parseResult.offsets == null) {
+                            parseResult.offsets = [];
+                        }
                         parseResult.offsets.push(term);
                     }
 
-                    let value = term.value;
+                }
 
-                    // Range are separated with a dash
-                    let rangeValues = value.split('-');
+            // Range
+            } else if ('from' in term) {
 
-                    // When both end of the range are specified
-                    // keyword:XXXX-YYYY
-                    parseResult[key] = {};
-                    if (2 === rangeValues.length) {
-                        parseResult[key].from = rangeValues[0];
-                        parseResult[key].to = rangeValues[1];
-                    
-                    // When pairs of ranges are specified
-                    // keyword:XXXX-YYYY,AAAA-BBBB
-                    } else if (rangeValues.length % 2 === 0) {
-                        //
+                // Make sure from is a thing
+                if (term.from.length) {
 
-                    // When only getting a single value,
-                    // or an odd number of values
-                    } else {
-                        parseResult[key].from = value;
+                    const parsedRange = parseRange(term.from);
+
+                    if (parsedRange != null) {
+
+                        if (term.exclude === true) {
+
+                            if (parseResult.exclude == null) {
+                                parseResult.exclude = {};
+                            }
+
+                            // Push values onto existing array or create new array
+                            if (parseResult.exclude[term.keyword as R] != null) {
+                                (parseResult.exclude[term.keyword as R] as RangeValue[]).push(parsedRange);
+                            } else {
+                                (parseResult.exclude[term.keyword as R] as RangeValue[]) = [parsedRange];
+                            }
+
+                        // Not an exclusion
+                        } else {
+
+                            // Push values onto existing array or create new array
+                            if (parseResult[term.keyword as R] != null) {
+                                (parseResult[term.keyword as R] as RangeValue[]).push(parsedRange);
+                            } else {
+                                (parseResult[term.keyword as R] as RangeValue[]) = [parsedRange];
+                            }
+                        }
+
+                        // When offsets is true, we also add it to the offsets array
+                        if (options.offsets === true) {
+                            if (parseResult.offsets == null) {
+                                parseResult.offsets = [];
+                            }
+                            parseResult.offsets.push({
+                                ...term,
+                                ...parsedRange // overrides term.from & term.to
+                            });
+                        }
+
                     }
 
-                } else {
-                    // We add it as pure text
-                    let text = term.keyword + ':' + term.value;
-                    (parseResult.text as string[]).push(text);
+                }
 
-                    // When offsets is true, push a new offset
-                    if (options.offsets) {
-                        parseResult.offsets.push({
-                            text: text,
-                            offsetStart: term.offsetStart,
-                            offsetEnd: term.offsetEnd
-                        });
-                    }
+            }
+
+        });
+
+        // If tokenize is false, concatenate text terms
+        if (options.tokenize === false) {
+            if (Array.isArray(parseResult.text)) {
+                parseResult.text = parseResult.text.join(' ').trim();
+            }
+            if (parseResult.exclude != null && Array.isArray(parseResult.exclude.text)) {
+                parseResult.exclude.text = parseResult.exclude.text.join(' ').trim();
+            }
+        }
+
+        // If alwaysArray is false, flatten out non-text (keyword and array) arrays if there is only one occurence
+        if (options.alwaysArray === false) {
+            for (let excludeKey in parseResult.exclude) {
+                if (excludeKey !== 'text'
+                 && Array.isArray(parseResult.exclude[excludeKey as K|R])
+                 && (parseResult.exclude[excludeKey as K|R] as (KeywordValue|RangeValue)[]).length === 1) {
+                    (parseResult.exclude[excludeKey as K|R] as KeywordValue|RangeValue) = (parseResult.exclude[excludeKey] as (KeywordValue|RangeValue)[])[0];
+                }
+            }
+            for (let key in parseResult) {
+                if (key !== 'text' && key !== 'exclude' && key !== 'offsets'
+                 && Array.isArray(parseResult[key as K|R])
+                 && (parseResult[key as K|R] as (KeywordValue|RangeValue)[]).length === 1) {
+                    (parseResult[key as K|R] as KeywordValue|RangeValue) = (parseResult[key as K|R] as (KeywordValue|RangeValue)[])[0];
                 }
             }
         }
 
-        // Concatenate all text terms if any
-        if (parseResult.text.length) {
-            if (options.tokenize === false) {
-                parseResult.text = (parseResult.text as string[]).join(' ').trim();
-            }
-
-        // Just remove the attribute text when it's empty
-        } else {
-            delete parseResult.text;
-        }
-
-        // Return forged query object
-        parseResult.exclude = exclusion;
         return parseResult;
     }
 
-};
+}
+
+/**
+ * Turns a previous parseResult back into a string.
+ * This requires that the original `parse()` method used `options.offsets: true` in order to respect its sort order.
+ */
+export function stringify<K extends KeywordName, R extends RangeName>(parseResult: Result<K, R> | string) {
+
+    // If the query object is falsy we can just return an empty string
+    if (!parseResult) {
+        return '';
+    }
+
+    // If the query object is already a string, we can return it immediately
+    if (typeof parseResult === 'string') {
+        return parseResult;
+    }
+
+    // If the query object does not have any keys, we can return an empty string
+    if (Object.keys(parseResult).length === 0) {
+        return '';
+    }
+
+    let parts: string[] = [];
+
+    // If the parseResult has an offsets array use that to keep the original sort order
+    if (parseResult.offsets != null) {
+        parseResult.offsets.forEach((offset) => {
+
+            // TextOffset
+            if ('text' in offset) {
+                parts.push((offset.exclude === true ? '-' : '') + addQuotes(offset.text));
+
+            // KeywordOffset
+            } else if ('value' in offset) {
+                parts.push((offset.exclude === true ? '-' : '') + offset.keyword + ':' + addQuotes(offset.value));
+
+            // RangeOffset
+            } else if ('from' in offset) {
+                parts.push((offset.exclude === true ? '-' : '') + offset.keyword + ':' + addQuotes(offset.from) + (offset.to != null ? ('-' + addQuotes(offset.to)) : ''));
+            }
+        });
+
+    } else {
+
+        // Otherwise start by stringifying the positive text, keyword and ranges
+        parts = stringifyResultData(parseResult, parseResult.options, '');
+
+        // Add in excluded text keywords and ranges
+        if (parseResult.exclude) {
+            if (Object.keys(parseResult.exclude).length > 0) {
+                parts.push(...stringifyResultData(parseResult.exclude, parseResult.options, '-'));
+            }
+        }
+    }
+
+    return parts.join(' ');
+
+}
+
+function stringifyResultData<K extends KeywordName, R extends RangeName>(parseResultData: ResultData<K, R>, options: Options<K, R>, prefix: string) {
+
+    // Keep track of all single stringified parts in this array
+    let parts: string[] = [];
+
+    // Text
+    if (parseResultData.text) {
+        let value: string[] = [];
+        if (typeof parseResultData.text === 'string') {
+            value.push(parseResultData.text);
+        } else {
+            value.push.apply(value, parseResultData.text);
+        }
+
+        if (value.length > 0) {
+            parts.push(value.map(addQuotes).map(val => prefix + val).join(' '));
+        }
+    }
+
+
+    // Keywords
+    if (options.keywords) {
+        options.keywords.forEach((keyword) => {
+            if (!parseResultData[keyword]) {
+                return;
+            }
+
+            let value: KeywordValue[]= [];
+            if (typeof parseResultData[keyword] === 'string') {
+                value.push(parseResultData[keyword] as KeywordValue);
+            } else {
+                value.push.apply(value, parseResultData[keyword] as KeywordValue[]);
+            }
+
+            if (value.length > 0) {
+                parts.push(prefix + keyword + ':' + value.map(addQuotes).join(','));
+            }
+        });
+    }
+
+    // Ranges
+    if (options.ranges) {
+        options.ranges.forEach((range) => {
+            if (!parseResultData[range]) {
+                return;
+            }
+
+            let value = (parseResultData[range] as RangeValue).from;
+            let to = (parseResultData[range] as RangeValue).to;
+            if (to) {
+                value = value + '-' + to;
+            }
+
+            if (value) {
+                parts.push(prefix + range + ':' + value);
+            }
+        });
+    }
+
+    return parts;
+}
+

@@ -19,14 +19,15 @@ And turns it into an object like this:
   date: {
     from: '1/10/2013',
     to: '15/04/2014'
-    },
+  },
   text: 'photos',
-  offsets: 
-   [ { keyword: 'from', value: 'hi@retrace.io,foo@gmail.com', offsetStart: 0, offsetEnd: 32 },
-     { keyword: 'to', value: 'me', offsetStart: 33, offsetEnd: 38 },
-     { keyword: 'subject', value: 'vacations', offsetStart: 39, offsetEnd: 56 },
-     { keyword: 'date', value: '1/10/2013-15/04/2014', offsetStart: 57, offsetEnd: 82 },
-     { text: 'photos', offsetStart: 83, offsetEnd: 89 } ]
+  offsets: [
+    { keyword: 'from', value: 'hi@retrace.io,foo@gmail.com', offsetStart: 0, offsetEnd: 32 },
+    { keyword: 'to', value: 'me', offsetStart: 33, offsetEnd: 38, exclude: false},
+    { keyword: 'subject', value: 'vacations', offsetStart: 39, offsetEnd: 56, , exclude: false },
+    { keyword: 'date', value: '1/10/2013-15/04/2014', offsetStart: 57, offsetEnd: 82, , exclude: false },
+    { text: 'photos', offsetStart: 83, offsetEnd: 89, exclude: false }
+  ]
 }
 ```
 
@@ -38,96 +39,136 @@ $ npm install search-query-parser
 
 ## Usage
 
-```javascript
+```typescript
 import * as SearchQueryParser from 'search-query-parser';
 
-var query = 'from:hi@retrace.io,foo@gmail.com to:me subject:vacations date:1/10/2013-15/04/2014 photos';
-var options = {keywords: ['from', 'to', 'subject'], ranges: ['date']}
+let query = 'from:hi@retrace.io,foo@gmail.com to:me subject:vacations date:1/10/2013-15/04/2014 photos';
+let options = { keywords: ['from', 'to', 'subject'], ranges: ['date'] } as const;
 
-var searchQueryObj = searchQuery.parse(query, options);
-
-// searchQueryObj.from is now ['hi@retrace.io', 'foo@gmail.com']
-// searchQueryObj.to is now 'me'
-// searchQueryObj.date is now {from: '1/10/2013', to: '15/04/2014'}
-// searchQueryObj.text is now 'photos'
+let searchQueryObj = SearchQueryParser.parse(query, options);
 ```
 
-You can configure what keywords and ranges the parser should accept with the options argument.
+You can configure what keywords and ranges the parser should accept with the `options` argument.
+
 It accepts 5 values:
-* `keywords`, that can be separated by commas (,). Accepts an array of strings.
-* `ranges`, that can be separated by a hyphen (-). Accepts an array of strings.
-* `tokenize`, that controls the behaviour of text search terms. If set to `true`, non-keyword text terms are returned as an array of strings where each term in the array is a whitespace-separated word, or a multi-word term surrounded by single- or double-quotes.
-* `alwaysArray`, a boolean that controls the behaviour of the returned query. If set to `true`, all matched keywords would always be arrays instead of strings. If set to `false` they will be strings if matched a single value. Defaults to `false`.
-* `offsets`, a boolean that controls the behaviour of the returned query. If set to `true`, the query will contain the offsets object. If set to `false`, the query will not contain the offsets object. Defaults to `true`.
 
-If no keywords or ranges are specified, or if none are present in the given search query, then `searchQuery.parse` will return a string if `tokenize` is false, or an array of strings under the key `text` if `tokenize` is true.
+* `keywords`, that can be separated by commas (,). Accepts an array of strings. Default is an empty array.
+* `ranges`, that can be separated by a hyphen (-). Accepts an array of strings. Default is an empty array.
+* [`tokenize`](#tokenize), a boolean that controls how **non-matched** keywords/ranges are returned. These are collected in the `text` and `exclude.text` property, respectivly. If set to `true`, they are returned as an array of strings where each term in the array is a whitespace-separated word, or a multi-word term surrounded by single- or double-quotes. If set to `false` they are returned as a single string. Defaults to `false`.
+* [`alwaysArray`](#alwaysArray), a boolean that controls how **matched** keywords/ranges are returned. If set to `true`, all matched keywords will always be arrays instead of strings. If set to `false` they will be strings or arrays depending on whether a single or multiple values are matched. Defaults to `false`.
+* [`offsets`](#offsets), a boolean that controls whether to return the offsets object. Note that the offsets object is needed if you want to stringify the returned object to a string again later in the correct order. Defaults to `true`.
 
-```javascript
-import * as SearchQueryParser from 'search-query-parser';
+### tokenize
 
-var query = 'a query with "just text"';
-var parsedQuery = SearchQueryParser.parse(query);
+If no keywords or ranges are specified, or if none are present in the given search query, then `SearchQueryParser.parse()` will return a the original input string if `tokenize` is false, or an array of strings under the key `text` if `tokenize` is true.
+
+```typescript
+let query = 'a query with "just text"';
+let parsedQuery = SearchQueryParser.parse(query);
 // parsedQuery is now 'a query with "just text"'
 
-var options = {keywords: ['unused']};
-var parsedQueryWithOptions = SearchQueryParser.parse(query, options);
+let options = { keywords: ['unused'] };
+let parsedQueryWithOptions = SearchQueryParser.parse(query, options);
 // parsedQueryWithOptions is now 'a query with "just text"'
 
-var options2 = {tokenize: true};
-var parsedQueryWithTokens = SearchQueryParser.parse(query, options2);
+let options2 = { tokenize: true };
+let parsedQueryWithTokens = SearchQueryParser.parse(query, options2);
 // parsedQueryWithTokens is now: ['a', 'query', 'with', 'just text']
 ```
 
-You can also use exclusion syntax, like `-from:sep@foobar.io name:hello,world`. This also works with non-keyword text terms when `tokenize` is set to `true`. 
-
-```javascript
-{
-  name: ['hello', 'world'],
-  exclude: {
-    from: ['sep@foobar.io']
-  }
-}
-```
+### alwaysArray
 
 Sometimes checking against whether a keyword holds string or not can be excessive and prone to errors; it's often easier to simply expect everything is an array even if it means doing 1-iteration loops often.
 
 ```javascript
-import * as SearchQueryParser from 'search-query-parser';
-
-var query = 'test:helloworld fun:yay,happy';
-var options = {keywords: ['test', 'fun']};
-var parsedQueryWithOptions = SearchQueryParser.parse(query, options);
+let query = 'test:helloworld fun:yay,happy';
+let options = { keywords: ['test', 'fun'] } as const;
+let parsedQueryWithOptions = SearchQueryParser.parse(query, options);
 // parsedQueryWithOptions is now:
 // {
 //   test: 'helloworld',
 //   fun: ['yay', 'happy']
 // }
 
-var optionsAlwaysArray = {keywords: ['test', 'fun'], alwaysArray: true};
-var parsedQueryWithOptions = SearchQueryParser.parse(query, options);
+let optionsAlwaysArray = { keywords: ['test', 'fun'], alwaysArray: true } as const;
+let parsedQueryWithOptions = SearchQueryParser.parse(query, options);
 // parsedQueryWithOptions is now:
 // {
-//   test: ['helloworld'], //No need to check whether test is a string or not!
+//   test: ['helloworld'], // No need to check whether test is a string or not!
 //   fun: ['yay', 'happy']
 // }
 ```
 
-The offsets object could become pretty huge with long search queries which could be an unnecessary use of space if no functionality depends on it. It can simply be turned off using the option `offsets: false`
+### offsets
+
+The offsets object could become pretty huge with long search queries which could be an unnecessary use of space if no functionality depends on it. It can simply be turned off using the option `offsets: false`.
+
+
+### Exclusion
+
+Text, keywords or ranges can be excluded by prefixing them with a `-`. They are collected in the `exclude` object and marked as excluded in the offsets array:
+
+```typescript
+let query = '-from:hi@retrace.io';
+let options = { keywords: ['from'] } as const;
+let parsedQueryWithOptions = SearchQueryParser.parse(query, options);
+
+// parsedQueryWithOptions is now:
+// {
+//   exclude: {
+//     from: 'hi@retrace.io'
+//   },
+//   {
+//     keyword: 'from',
+//     value: 'jul@foo.com',
+//     offsetStart: 0,
+//     offsetEnd: 19,
+//     exclude: true
+//   }
+// }
+```
+
+### Modyfing the results object and turning it back into a string
+
+Anytime, you can go back and stringify the parsed search query. This could be handy if you would like to manipulate the parsed search query object.
+
+If `offsets` is enabled, the stringification process will use the offsets data and keep the original order of the input string.  If `offsets` is not enabled, the order may differ.
+
+```typescript
+let query = 'from:hi@retrace.io,foo@gmail.com to:me subject:vacations date:1/10/2013-15/04/2014 photos';
+let options = { keywords: ['from', 'to', 'subject'], ranges: ['date'] } as const;
+
+let searchQueryObj = SearchQueryParser.parse(query, options);
+
+let newQuery = SearchQueryParser.stringify(searchQueryObj);
+// newQuery is now: from:hi@retrace.io,foo@gmail.com to:me subject:vacations date:1/10/2013-15/04/2014 photos
+```
+
+**TODO** Modifying any top-level properties of the results object will automatically keep `offsets` and `exclude` in sync.
+
 
 ## Typescript
 
-Typescript types are available for this library in the `docs` directory.
-[Browse type documentation here.](docs/README.md)
+This library is written in typescript and can be imported like so
 
-Documentation is generated using `node_modules/.bin/typedoc index.d.ts`
+```typescript
+import * as SearchQueryParser from 'search-query-parser';
+```
+
+Typehinting for the returned object properties is available, if you cast your options as a `const`:
+
+```typescript
+let options = { keywords: ['from'], ranges: ['date'] } as const;
+let searchQueryObj = SearchQueryParser.parse('someQuery', options);
+
+// searchQueryObj.from will now be hinted as string?
+```
 
 ## Testing
 
-The 29 tests are written using the BDD testing framework should.js, and run with mocha.
+Tests are written using the BDD / TDD testing framework `chai`, and run with `mocha`.
 
-Run `npm install should` and `npm install -g mocha` to install them both.
-
-Run tests with `make test`.
+Run tests with `npm run test`.
 
 ## License
 
